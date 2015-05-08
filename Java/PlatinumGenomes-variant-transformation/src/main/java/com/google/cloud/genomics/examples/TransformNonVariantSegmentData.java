@@ -266,11 +266,10 @@ public class TransformNonVariantSegmentData {
     PCollection<Variant> variants =
         JoinNonVariantSegmentsWithVariants.joinVariantsTransform(input, auth);
 
-    // In some datasets we find ambiguous non-variant segments, retain the one with the highest
-    // quality
-    PCollection<Variant> imputedVariants = variants.apply(ParDo.of(new FlagVariantsWithAmbiguousCallsFn()));
+    // If we happen to have any variants in this dataset with ambiguous calls for a sample, flag those.
+    PCollection<Variant> flaggedVariants = variants.apply(ParDo.of(new FlagVariantsWithAmbiguousCallsFn()));
 
-    imputedVariants.apply(ParDo.of(new FormatVariantsFn())).apply(
+    flaggedVariants.apply(ParDo.of(new FormatVariantsFn())).apply(
         BigQueryIO.Write.to(options.getOutputTable()).withSchema(getTableSchema())
             .withCreateDisposition(BigQueryIO.Write.CreateDisposition.CREATE_IF_NEEDED)
             .withWriteDisposition(BigQueryIO.Write.WriteDisposition.WRITE_TRUNCATE));
