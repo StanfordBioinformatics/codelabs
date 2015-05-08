@@ -1,11 +1,11 @@
 /*
  * Copyright (C) 2015 Google Inc.
- *
+ * 
  * Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
  * in compliance with the License. You may obtain a copy of the License at
- *
+ * 
  * http://www.apache.org/licenses/LICENSE-2.0
- *
+ * 
  * Unless required by applicable law or agreed to in writing, software distributed under the License
  * is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
  * or implied. See the License for the specific language governing permissions and limitations under
@@ -16,7 +16,13 @@ package com.google.cloud.genomics.examples;
 import java.io.IOException;
 import java.security.GeneralSecurityException;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Map.Entry;
+import java.util.logging.Logger;
 
 import com.google.api.client.repackaged.com.google.common.base.Preconditions;
 import com.google.api.services.bigquery.model.TableFieldSchema;
@@ -30,9 +36,11 @@ import com.google.cloud.dataflow.sdk.io.BigQueryIO;
 import com.google.cloud.dataflow.sdk.options.Description;
 import com.google.cloud.dataflow.sdk.options.PipelineOptionsFactory;
 import com.google.cloud.dataflow.sdk.options.Validation;
+import com.google.cloud.dataflow.sdk.transforms.Aggregator;
 import com.google.cloud.dataflow.sdk.transforms.Create;
 import com.google.cloud.dataflow.sdk.transforms.DoFn;
 import com.google.cloud.dataflow.sdk.transforms.ParDo;
+import com.google.cloud.dataflow.sdk.transforms.Sum;
 import com.google.cloud.dataflow.sdk.values.PCollection;
 import com.google.cloud.genomics.dataflow.functions.JoinNonVariantSegmentsWithVariants;
 import com.google.cloud.genomics.dataflow.utils.DataflowWorkarounds;
@@ -40,6 +48,12 @@ import com.google.cloud.genomics.dataflow.utils.GenomicsDatasetOptions;
 import com.google.cloud.genomics.dataflow.utils.GenomicsOptions;
 import com.google.cloud.genomics.utils.Contig.SexChromosomeFilter;
 import com.google.cloud.genomics.utils.GenomicsFactory;
+import com.google.common.base.Function;
+import com.google.common.base.Predicate;
+import com.google.common.collect.Iterables;
+import com.google.common.collect.ListMultimap;
+import com.google.common.collect.Lists;
+import com.google.common.collect.Multimaps;
 
 /**
  * Sample pipeline that transforms data with non-variant segments (such as data that was in source
@@ -61,20 +75,24 @@ import com.google.cloud.genomics.utils.GenomicsFactory;
  */
 public class TransformNonVariantSegmentData {
 
+  private static final Logger LOG = Logger
+      .getLogger(TransformNonVariantSegmentData.class.getName());
+
+  public static final String[] CALL_INFO_FIELDS = {"QUAL", "DP", "FILTER", "GQ"};
+  public static final String HAS_AMBIGUOUS_CALLS_FIELD = "ambiguousCalls";
+
   /**
    * Options supported by {@link TransformNonVariantSegmentData}.
    * <p>
    * Inherits standard configuration options for Genomics pipelines and datasets.
    */
   private static interface Options extends GenomicsDatasetOptions {
-    @Override
     @Description("BigQuery table to write to, specified as "
         + "<project_id>:<dataset_id>.<table_id>. The dataset must already exist.")
     @Validation.Required
-    String getOutput();
+    String getOutputTable();
 
-    @Override
-    void setOutput(String value);
+    void setOutputTable(String value);
   }
 
   /**
@@ -90,6 +108,11 @@ public class TransformNonVariantSegmentData {
         .setMode("REPEATED"));
     callFields.add(new TableFieldSchema().setName("genotype_likelihood").setType("FLOAT")
         .setMode("REPEATED"));
+    callFields.add(new TableFieldSchema().setName("AD").setType("INTEGER").setMode("REPEATED"));
+    callFields.add(new TableFieldSchema().setName("DP").setType("INTEGER"));
+    callFields.add(new TableFieldSchema().setName("FILTER").setType("STRING"));
+    callFields.add(new TableFieldSchema().setName("GQ").setType("INTEGER"));
+    callFields.add(new TableFieldSchema().setName("QUAL").setType("FLOAT"));
 
     List<TableFieldSchema> fields = new ArrayList<>();
     fields.add(new TableFieldSchema().setName("variant_id").setType("STRING"));
@@ -99,11 +122,10 @@ public class TransformNonVariantSegmentData {
     fields.add(new TableFieldSchema().setName("reference_bases").setType("STRING"));
     fields.add(new TableFieldSchema().setName("alternate_bases").setType("STRING")
         .setMode("REPEATED"));
-    fields.add(new TableFieldSchema().setName("names").setType("STRING")
-        .setMode("REPEATED"));
-    fields.add(new TableFieldSchema().setName("filter").setType("STRING")
-        .setMode("REPEATED"));
+    fields.add(new TableFieldSchema().setName("names").setType("STRING").setMode("REPEATED"));
+    fields.add(new TableFieldSchema().setName("filter").setType("STRING").setMode("REPEATED"));
     fields.add(new TableFieldSchema().setName("quality").setType("FLOAT"));
+    fields.add(new TableFieldSchema().setName(HAS_AMBIGUOUS_CALLS_FIELD).setType("BOOLEAN"));
     fields.add(new TableFieldSchema().setName("call").setType("RECORD").setMode("REPEATED")
         .setFields(callFields));
 
@@ -111,8 +133,8 @@ public class TransformNonVariantSegmentData {
   }
 
   /**
-   * Prepare the data for writing to BigQuery by building a TableRow object containing data from
-   * the variant mapped onto the schema to be used for the destination table.
+   * Prepare the data for writing to BigQuery by building a TableRow object containing data from the
+   * variant mapped onto the schema to be used for the destination table.
    */
   static class FormatVariantsFn extends DoFn<Variant, TableRow> {
     @Override
@@ -121,28 +143,98 @@ public class TransformNonVariantSegmentData {
 
       List<TableRow> calls = new ArrayList<>();
       for (Call call : v.getCalls()) {
-        calls.add(new TableRow()
-            .set("call_set_name", call.getCallSetName())
-            .set("phaseset", call.getPhaseset())
-            .set("genotype", call.getGenotype())
-            .set("genotype_likelihood",
-                (call.getGenotypeLikelihood() == null) ? new ArrayList<Double>() :
-                  call.getGenotypeLikelihood()
-                  ));
+        TableRow row =
+            new TableRow()
+                .set("call_set_name", call.getCallSetName())
+                .set("phaseset", call.getPhaseset())
+                .set("genotype",
+                    (call.getGenotype() == null) ? new ArrayList<String>() : call.getGenotype())
+                .set(
+                    "genotype_likelihood",
+                    (call.getGenotypeLikelihood() == null) ? new ArrayList<String>() : call
+                        .getGenotypeLikelihood());
+
+        Map<String, List<String>> info = call.getInfo();
+        row.set("AD", (info.containsKey("AD")) ? info.get("AD") : new ArrayList<String>());
+        for (String callInfoField : CALL_INFO_FIELDS) {
+          if (info.containsKey(callInfoField)) {
+            row.set(callInfoField, info.get(callInfoField).get(0));
+          }
+        }
+        calls.add(row);
       }
 
-      TableRow row = new TableRow()
-          .set("variant_id", v.getId())
-          .set("reference_name", v.getReferenceName())
-          .set("start", v.getStart())
-          .set("end", v.getEnd())
-          .set("reference_bases", v.getReferenceBases())
-          .set("alternate_bases", v.getAlternateBases())
-          .set("names", (v.getNames() == null) ? new ArrayList<String>() : v.getNames())
-          .set("filter", (v.getFilter() == null) ? new ArrayList<String>() : v.getFilter())
-          .set("quality", v.getQuality())
-          .set("call", calls);
+      TableRow row =
+          new TableRow()
+              .set("variant_id", v.getId())
+              .set("reference_name", v.getReferenceName())
+              .set("start", v.getStart())
+              .set("end", v.getEnd())
+              .set("reference_bases", v.getReferenceBases())
+              .set("alternate_bases",
+                  (v.getAlternateBases() == null) ? new ArrayList<String>() : v.getAlternateBases())
+              .set("names", (v.getNames() == null) ? new ArrayList<String>() : v.getNames())
+              .set("filter", (v.getFilter() == null) ? new ArrayList<String>() : v.getFilter())
+              .set("quality", v.getQuality()).set("call", calls)
+              .set(HAS_AMBIGUOUS_CALLS_FIELD, v.getInfo().get(HAS_AMBIGUOUS_CALLS_FIELD).get(0));
+      
       c.output(row);
+    }
+  }
+
+  public static final class FlagVariantsWithAmbiguousCallsFn extends DoFn<Variant, Variant> {
+
+    Aggregator<Long> variantsWithAmbiguousCallsCount;
+
+    @Override
+    public void startBundle(Context c) {
+      variantsWithAmbiguousCallsCount =
+          c.createAggregator("Number of variants containing ambiguous calls", new Sum.SumLongFn());
+    }
+
+    @Override
+    public void processElement(ProcessContext context) {
+      Variant variant = context.element();
+
+      // TEMPORARY HACK: filter out a known bad callset.
+      variant.setCalls(Lists.newArrayList(Iterables.filter(variant.getCalls(), new Predicate<Call>() {
+        @Override
+        public boolean apply(Call call) {
+          if (call.getCallSetName().equals("LP6005243-DNA_C07")) {
+            return false;
+          }
+          return true;
+        }
+      })));
+
+      // Gather calls together for the same callSetName.
+      ListMultimap<String, Call> indexedCalls =
+          Multimaps.index(variant.getCalls(), new Function<Call, String>() {
+            @Override
+            public String apply(final Call c) {
+              return c.getCallSetName();
+            }
+          });
+
+      // Flag and count variants with multiple calls per callSetName.
+      boolean isAmbiguous = false;
+      for (Entry<String, Collection<Call>> entry : indexedCalls.asMap().entrySet()) {
+        if (1 < entry.getValue().size()) {
+          LOG.warning("Variant " + variant.getId() + " contains ambiguous calls for "
+              + entry.getValue().iterator().next().getCallSetName());
+          isAmbiguous = true;
+        }
+      }
+      if (isAmbiguous) {
+        variantsWithAmbiguousCallsCount.addValue(1l);
+      }
+      
+      if(variant.getInfo() == null) {
+        variant.setInfo(new HashMap<String, List<String>>());
+      }
+      variant.getInfo().put(HAS_AMBIGUOUS_CALLS_FIELD, Arrays.asList(Boolean.toString(isAmbiguous)));
+      
+      context.output(variant);
     }
   }
 
@@ -167,14 +259,19 @@ public class TransformNonVariantSegmentData {
     Pipeline p = Pipeline.create(options);
     DataflowWorkarounds.registerGenomicsCoders(p);
 
-    PCollection<SearchVariantsRequest> input = p.begin()
-        .apply(Create.of(requests));
+    PCollection<SearchVariantsRequest> input = p.begin().apply(Create.of(requests));
 
+    // Now we have a collection of data with non-variant segments omitted but calls from overlapping
+    // non-variant segments added to SNPs.
     PCollection<Variant> variants =
         JoinNonVariantSegmentsWithVariants.joinVariantsTransform(input, auth);
 
-    variants.apply(ParDo.of(new FormatVariantsFn())).apply(
-        BigQueryIO.Write.to(options.getOutput()).withSchema(getTableSchema())
+    // In some datasets we find ambiguous non-variant segments, retain the one with the highest
+    // quality
+    PCollection<Variant> imputedVariants = variants.apply(ParDo.of(new FlagVariantsWithAmbiguousCallsFn()));
+
+    imputedVariants.apply(ParDo.of(new FormatVariantsFn())).apply(
+        BigQueryIO.Write.to(options.getOutputTable()).withSchema(getTableSchema())
             .withCreateDisposition(BigQueryIO.Write.CreateDisposition.CREATE_IF_NEEDED)
             .withWriteDisposition(BigQueryIO.Write.WriteDisposition.WRITE_TRUNCATE));
 
