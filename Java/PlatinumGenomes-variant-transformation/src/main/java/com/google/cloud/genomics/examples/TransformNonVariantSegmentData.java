@@ -50,6 +50,7 @@ import com.google.cloud.genomics.utils.Contig.SexChromosomeFilter;
 import com.google.cloud.genomics.utils.GenomicsFactory;
 import com.google.common.base.Function;
 import com.google.common.base.Predicate;
+import com.google.common.collect.ImmutableSet;
 import com.google.common.collect.Iterables;
 import com.google.common.collect.ListMultimap;
 import com.google.common.collect.Lists;
@@ -80,6 +81,47 @@ public class TransformNonVariantSegmentData {
 
   public static final String[] CALL_INFO_FIELDS = {"QUAL", "DP", "FILTER", "GQ"};
   public static final String HAS_AMBIGUOUS_CALLS_FIELD = "ambiguousCalls";
+  
+  // TEMPORARY HACK: filter out known bad callsets. 
+  public static final ImmutableSet<String> GENOMES_TO_SKIP = ImmutableSet.of(
+      "LP6005038-DNA_C02",
+      "LP6005038-DNA_D03",
+      "LP6005051-DNA_D04",
+      "LP6005051-DNA_D09",
+      "LP6005144-DNA_A02",
+      "LP6005144-DNA_D03",
+      "LP6005144-DNA_E04",
+      "LP6005144-DNA_G07",
+      "LP6005144-DNA_G08",
+      "LP6005243-DNA_A08",
+      "LP6005243-DNA_A12",
+      "LP6005243-DNA_B12",
+      "LP6005243-DNA_C03",
+      "LP6005243-DNA_C07",
+      "LP6005243-DNA_C12",
+      "LP6005243-DNA_D12",
+      "LP6005243-DNA_E12",
+      "LP6005243-DNA_F11",
+      "LP6005243-DNA_F12",
+      "LP6005243-DNA_G11",
+      "LP6005243-DNA_G12",
+      "LP6005243-DNA_H03",
+      "LP6005243-DNA_H11",
+      "LP6005243-DNA_H12",
+      "LP6005692-DNA_A04",
+      "LP6005692-DNA_D05",
+      "LP6005692-DNA_E02",
+      "LP6005692-DNA_E10",
+      "LP6005692-DNA_F12",
+      "LP6005692-DNA_G09",
+      "LP6005692-DNA_G12",
+      "LP6005692-DNA_H01",
+      "LP6005692-DNA_H12",
+      "LP6005693-DNA_B03",
+      "LP6005693-DNA_C03",
+      "LP6005693-DNA_D03",
+      "LP6005693-DNA_H01",
+      "LP6005695-DNA_A01");
 
   /**
    * Options supported by {@link TransformNonVariantSegmentData}.
@@ -196,17 +238,21 @@ public class TransformNonVariantSegmentData {
     public void processElement(ProcessContext context) {
       Variant variant = context.element();
 
-      // TEMPORARY HACK: filter out a known bad callset.
-      variant.setCalls(Lists.newArrayList(Iterables.filter(variant.getCalls(), new Predicate<Call>() {
+      // TEMPORARY HACK: filter out known bad callsets.
+      List<Call> filteredCalls = Lists.newArrayList(Iterables.filter(variant.getCalls(), new Predicate<Call>() {
         @Override
         public boolean apply(Call call) {
-          if (call.getCallSetName().equals("LP6005243-DNA_C07")) {
+          if (GENOMES_TO_SKIP.contains(call.getCallSetName())) {
             return false;
           }
           return true;
         }
-      })));
-
+      }));
+      if(filteredCalls.isEmpty()) {
+        return;
+      }
+      variant.setCalls(filteredCalls);
+      
       // Gather calls together for the same callSetName.
       ListMultimap<String, Call> indexedCalls =
           Multimaps.index(variant.getCalls(), new Function<Call, String>() {
