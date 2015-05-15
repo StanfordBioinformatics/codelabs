@@ -1,11 +1,11 @@
 /*
  * Copyright (C) 2015 Google Inc.
- * 
+ *
  * Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
  * in compliance with the License. You may obtain a copy of the License at
- * 
+ *
  * http://www.apache.org/licenses/LICENSE-2.0
- * 
+ *
  * Unless required by applicable law or agreed to in writing, software distributed under the License
  * is distributed on an "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express
  * or implied. See the License for the specific language governing permissions and limitations under
@@ -81,8 +81,8 @@ public class TransformNonVariantSegmentData {
 
   public static final String[] CALL_INFO_FIELDS = {"QUAL", "DP", "FILTER", "GQ"};
   public static final String HAS_AMBIGUOUS_CALLS_FIELD = "ambiguousCalls";
-  
-  // TEMPORARY HACK: filter out known bad callsets. 
+
+  // TEMPORARY HACK: filter out known bad callsets.
   public static final ImmutableSet<String> GENOMES_TO_SKIP = ImmutableSet.of(
       "LP6005038-DNA_C02",
       "LP6005038-DNA_D03",
@@ -219,7 +219,7 @@ public class TransformNonVariantSegmentData {
               .set("filter", (v.getFilter() == null) ? new ArrayList<String>() : v.getFilter())
               .set("quality", v.getQuality()).set("call", calls)
               .set(HAS_AMBIGUOUS_CALLS_FIELD, v.getInfo().get(HAS_AMBIGUOUS_CALLS_FIELD).get(0));
-      
+
       c.output(row);
     }
   }
@@ -238,6 +238,10 @@ public class TransformNonVariantSegmentData {
     public void processElement(ProcessContext context) {
       Variant variant = context.element();
 
+      if(null == variant.getCalls() || variant.getCalls().isEmpty()) {
+        return;
+      }
+
       // TEMPORARY HACK: filter out known bad callsets.
       List<Call> filteredCalls = Lists.newArrayList(Iterables.filter(variant.getCalls(), new Predicate<Call>() {
         @Override
@@ -252,7 +256,7 @@ public class TransformNonVariantSegmentData {
         return;
       }
       variant.setCalls(filteredCalls);
-      
+
       // Gather calls together for the same callSetName.
       ListMultimap<String, Call> indexedCalls =
           Multimaps.index(variant.getCalls(), new Function<Call, String>() {
@@ -274,12 +278,12 @@ public class TransformNonVariantSegmentData {
       if (isAmbiguous) {
         variantsWithAmbiguousCallsCount.addValue(1l);
       }
-      
+
       if(variant.getInfo() == null) {
         variant.setInfo(new HashMap<String, List<String>>());
       }
       variant.getInfo().put(HAS_AMBIGUOUS_CALLS_FIELD, Arrays.asList(Boolean.toString(isAmbiguous)));
-      
+
       context.output(variant);
     }
   }
