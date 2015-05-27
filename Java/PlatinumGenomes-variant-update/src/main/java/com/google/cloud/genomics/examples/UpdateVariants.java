@@ -56,7 +56,7 @@ public class UpdateVariants {
    * Inherits standard configuration options for Genomics pipelines.
    */
   private static interface Options extends GenomicsOptions {
-    @Description("Path to file(s) from which to read variantIds (local or Google Cloud Storage).")
+    @Description("Path to file(s) from which to read newline-separated variantIds (local or Google Cloud Storage).")
     @Validation.Required
     String getInput();
 
@@ -73,7 +73,7 @@ public class UpdateVariants {
    * Given a variantId, modify the variant to add a particular key/value pair to the set of entries
    * in the variant info field.
    * 
-   * The result of this DoFn is the side-effect (modified variants) and emits the count of variants
+   * The result of this DoFn is the side-effect (modified variants) and the count of variants
    * modified.
    */
   static class FlagVariant extends DoFn<String, Integer> {
