@@ -59,7 +59,12 @@ public class UpdateVariants {
    * Inherits standard configuration options for Genomics pipelines.
    */
   private static interface Options extends GenomicsOptions {
-    @Description("Path to file(s) from which to read newline-separated variantIds (local or Google Cloud Storage).")
+    @Description("Path to file(s) from which to read newline-separated variantIds (local or Google Cloud Storage)." +
+            " Each line should be a comma separated list of variantIds, their reason for failure, and optionally" +
+            " a call set name to flag specifically.\n" +
+            "Example: \n" +
+            "CP2Ry8fS3pXI7QESBWNocjE4GKROIMLN4sDr2MX3ywE,hardy_weinberg\n" +
+            "CP2Ry8fS3pXI7QESBWNocjE5GMD3BCCTitD_kq-XyCU,titv_by_depth,LP6005038-DNA_A02")
     @Validation.Required
     String getInput();
 
@@ -147,11 +152,7 @@ public class UpdateVariants {
         LOG.fine("About to update: " + variant);
       }
 
-      String variantSetId = variant.getVariantSetId();
-
-      List<String> qcValues = new LinkedList<String>(Arrays.asList(failedQcValue));
-
-      // Some variants may have no info entries.
+            // Some variants may have no info entries.
       if(variant.getInfo() == null) {
         variant.setInfo(new HashMap<String, List<String>>());
       }
@@ -160,7 +161,7 @@ public class UpdateVariants {
       if(callSetName.isEmpty()) {
         // Check if there is already a qc value
         Map<String, List<String>> info = variant.getInfo();
-        qcValues = getQcValues(info, failedQcValue);
+        List<String> qcValues = getQcValues(info, failedQcValue);
 
         // Add the flag to the current set of entries in the variant info field.
         variant.getInfo().put(FAILED_QC_FLAG, qcValues);
@@ -184,16 +185,21 @@ public class UpdateVariants {
           String callName = call.getCallSetName();
           if (callName.equals(callSetName)) {
             Map<String, List<String>> info = call.getInfo();
-            qcValues = getQcValues(info, failedQcValue);
+            List<String> qcValues = getQcValues(info, failedQcValue);
             call.getInfo().put(FAILED_QC_FLAG, qcValues);
+            break;
           }
         }
 
         variant.setId(null);
+        String variantSetId = variant.getVariantSetId();
+
         MergeVariantsRequest request = new MergeVariantsRequest();
         request.setVariants(Arrays.asList(variant));
         genomics.variantsets().mergeVariants(variantSetId, request).execute();
 
+        // Add to the total count
+        flaggedVariantCount.addValue(1L);
       }
 
       // TODO: would any other output be more useful?
@@ -222,10 +228,9 @@ public class UpdateVariants {
               @Override
               public void processElement(DoFn<Integer, String>.ProcessContext c) throws Exception {
                 c.output(String.valueOf(c.element()));
-              }
-            }).named("toString"))
+        }
+      }).named("toString"))
       .apply(TextIO.Write.named("WriteCount").to(options.getOutput()));
-
     p.run();
   }
 }
