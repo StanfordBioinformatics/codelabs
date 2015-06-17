@@ -17,14 +17,10 @@ import java.io.File;
 import java.io.IOException;
 import java.nio.charset.Charset;
 import java.security.GeneralSecurityException;
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.Collection;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 import java.util.Map.Entry;
 import java.util.logging.Logger;
+import java.util.LinkedList;
 
 import com.google.api.client.util.Preconditions;
 import com.google.api.services.bigquery.model.TableFieldSchema;
@@ -84,8 +80,9 @@ public class TransformNonVariantSegmentData {
   private static final Logger LOG = Logger
       .getLogger(TransformNonVariantSegmentData.class.getName());
 
-  public static final String[] CALL_INFO_FIELDS = {"QUAL", "DP", "FILTER", "GQ"};
+  public static final String[] CALL_INFO_FIELDS = {"QUAL", "DP", "FILTER", "GQ", "QC"};
   public static final String HAS_AMBIGUOUS_CALLS_FIELD = "ambiguousCalls";
+  public static final String QC_FIELD = "QC";
   
   /**
    * Options supported by {@link TransformNonVariantSegmentData}.
@@ -125,6 +122,7 @@ public class TransformNonVariantSegmentData {
     callFields.add(new TableFieldSchema().setName("FILTER").setType("STRING"));
     callFields.add(new TableFieldSchema().setName("GQ").setType("INTEGER"));
     callFields.add(new TableFieldSchema().setName("QUAL").setType("FLOAT"));
+    callFields.add(new TableFieldSchema().setName(QC_FIELD).setType("STRING").setMode("REPEATED"));
 
     List<TableFieldSchema> fields = new ArrayList<>();
     fields.add(new TableFieldSchema().setName("variant_id").setType("STRING"));
@@ -137,6 +135,7 @@ public class TransformNonVariantSegmentData {
     fields.add(new TableFieldSchema().setName("names").setType("STRING").setMode("REPEATED"));
     fields.add(new TableFieldSchema().setName("filter").setType("STRING").setMode("REPEATED"));
     fields.add(new TableFieldSchema().setName("quality").setType("FLOAT"));
+    fields.add(new TableFieldSchema().setName(QC_FIELD).setType("STRING").setMode("REPEATED"));
     fields.add(new TableFieldSchema().setName(HAS_AMBIGUOUS_CALLS_FIELD).setType("BOOLEAN"));
     fields.add(new TableFieldSchema().setName("call").setType("RECORD").setMode("REPEATED")
         .setFields(callFields));
@@ -166,7 +165,8 @@ public class TransformNonVariantSegmentData {
                 .set(
                     "genotype_likelihood",
                     (call.getGenotypeLikelihood() == null) ? new ArrayList<String>() : call
-                        .getGenotypeLikelihood());
+                        .getGenotypeLikelihood())
+                .set("QC", getQCFlags(call.getInfo()));
 
         Map<String, List<String>> info = call.getInfo();
         row.set("AD", (info.containsKey("AD")) ? info.get("AD") : new ArrayList<String>());
@@ -190,8 +190,10 @@ public class TransformNonVariantSegmentData {
               .set("names", (v.getNames() == null) ? new ArrayList<String>() : v.getNames())
               .set("filter", (v.getFilter() == null) ? new ArrayList<String>() : v.getFilter())
               .set("quality", v.getQuality())
+              .set("QC", getQCFlags(v.getInfo()))
               .set("call", calls)
               .set(HAS_AMBIGUOUS_CALLS_FIELD, v.getInfo().get(HAS_AMBIGUOUS_CALLS_FIELD).get(0));
+
 
       c.output(row);
     }
@@ -294,6 +296,19 @@ public class TransformNonVariantSegmentData {
 
       context.output(variant);
     }
+  }
+
+  public static List<String> getQCFlags(Map<String, List<String>> info){
+      List<String> qcValues = new LinkedList<String>();
+      if (info.containsKey(QC_FIELD)) {
+          List<String> values = info.get(QC_FIELD);
+          for (String value : values) {
+              if (!qcValues.contains(value)) {
+                  qcValues.add(value);
+              }
+          }
+      }
+      return qcValues;
   }
 
   public static void main(String[] args) throws IOException, GeneralSecurityException {
