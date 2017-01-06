@@ -50,6 +50,7 @@ import com.google.genomics.v1.Variant;
 import com.google.genomics.v1.VariantCall;
 import com.google.protobuf.ListValue;
 import com.google.protobuf.Value;
+//import com.sun.xml.internal.messaging.saaj.packaging.mime.util.QDecoderStream;
 
 import java.io.IOException;
 import java.security.GeneralSecurityException;
@@ -128,7 +129,16 @@ public class TransformNonVariantSegmentData {
                 .setMode("REPEATED"));
         callFields.add(new TableFieldSchema().setName("genotype_likelihood").setType("FLOAT")
                 .setMode("REPEATED"));
+        callFields.add(new TableFieldSchema().setName("MQ").setType("FLOAT"));
+        callFields.add(new TableFieldSchema().setName("QD").setType("FLOAT"));
+        callFields.add(new TableFieldSchema().setName("FS").setType("FLOAT"));
+        callFields.add(new TableFieldSchema().setName("VQSLOD").setType("FLOAT"));
+        callFields.add(new TableFieldSchema().setName("MQRankSum").setType("FLOAT"));
+        callFields.add(new TableFieldSchema().setName("ReadPosRankSum").setType("FLOAT"));
+        callFields.add(new TableFieldSchema().setName("culprit").setType("STRING"));
+        callFields.add(new TableFieldSchema().setName(FILTER_FIELD).setType("STRING").setMode("REPEATED"));
         callFields.add(new TableFieldSchema().setName(QC_FIELD).setType("STRING").setMode("REPEATED"));
+
 
         List<TableFieldSchema> fields = new ArrayList<>();
         fields.add(new TableFieldSchema().setName("variant_id").setType("STRING"));
@@ -148,6 +158,7 @@ public class TransformNonVariantSegmentData {
         fields.add(new TableFieldSchema().setName(QC_FIELD).setType("STRING").setMode("REPEATED"));
         fields.add(new TableFieldSchema().setName("call").setType("RECORD").setMode("REPEATED")
                 .setFields(callFields));
+
 
         return new TableSchema().setFields(fields);
     }
@@ -171,16 +182,31 @@ public class TransformNonVariantSegmentData {
                 genotypeCount.addAll(call.getGenotypeList());
                 Map<String, ListValue> info = call.getInfo();
 
+                List<String> filters = Lists.newArrayList();
+                if (null != call.getInfo().get(FILTER_FIELD)) {
+                    for (Value value : call.getInfo().get(FILTER_FIELD).getValuesList()) {
+                        filters.add(value.getStringValue());
+                    }
+                }
+
                 calls.add(new TableRow()
                         .set("call_set_name", call.getCallSetName())
                         .set("phaseset", call.getPhaseset())
                         .set("genotype", call.getGenotypeList())
                         .set("genotype_likelihood",
                                 (call.getGenotypeLikelihoodList() == null) ? new ArrayList<Double>() :
-                                        call.getGenotypeLikelihoodList()
-                        )
+                                        call.getGenotypeLikelihoodList())
+                        .set("MQ", getFloatField("MQ", call.getInfo()))
+                        .set(FILTER_FIELD, filters)
+                        .set("QD", getFloatField("QD", call.getInfo()))
+                        .set("FS", getFloatField("FS", call.getInfo()))
+                        .set("VQSLOD", getFloatField("VQSLOD", call.getInfo()))
+                        .set("MQRankSum", getFloatField("MQRankSum", call.getInfo()))
+                        .set("ReadPosRankSum", getFloatField("ReadPosRankSum", call.getInfo()))
+                        .set("culprit", getStringField("culprit", call.getInfo()))
                         .set("QC", getQCFlags(call.getInfo())));
             }
+
 
             // Compute AN/AC/AF.  Note that no-calls (genotype -1) are excluded from AN.
             int numAlts = v.getAlternateBasesCount();
@@ -327,45 +353,46 @@ public class TransformNonVariantSegmentData {
         }
     }
 
-    //public static List<String> getQCFlags(Map<String, List<String>> info){
-    //    List<String> qcValues = new LinkedList<String>();
-    //    if (info.containsKey(QC_FIELD)) {
-    //        List<String> values = info.get(QC_FIELD);
-    //        for (String value : values) {
-    //            if (!qcValues.contains(value)) {
-    //                qcValues.add(value);
-    //            }
-    //        }
-    //    }
-    //    return qcValues;
-    //}
-
     public static List getQCFlags(Map<String, ListValue> info) {
         List<Object> qcValues = new LinkedList<Object>();
-        LOG.info("FOUND INFO: " + info.toString());
         if (info.containsKey(QC_FIELD)) {
-            LOG.info("Found QC Field");
             List<Value> values = info.get(QC_FIELD).getValuesList();
-            LOG.info("QC VALUES: " + values.toString());
-
             for (Value value : values) {
                 String current = value.getStringValue();
-                LOG.info("CURRENT VALUE: " + current);
                 if (!qcValues.contains(current)) {
                     qcValues.add(current);
                 }
             }
-
-            //for (int i = 0; i < values.size(); i++) {
-            //    String value = values.get(i).toString();
-            //    LOG.info("CURRENT VALUE: " + value);
-            //    if (!qcValues.contains(value)) {
-            //        qcValues.add(value);
-            //    }
-            //}
         }
-        LOG.info("RETURNED INFO: " + qcValues.toString());
         return qcValues;
+    }
+
+    public static Float getFloatField(String field, Map<String, ListValue> info) {
+        Float returnValue = Float.NaN;
+        if (info.containsKey(field)) {
+            Value value = info.get(field).getValues(0);
+            returnValue = Float.parseFloat(value.getStringValue());
+
+        }
+        return returnValue;
+    }
+
+    public static Integer getIntField(String field, Map<String, ListValue> info) {
+        Integer returnValue = null;
+        if (info.containsKey(field)) {
+            Value value = info.get(field).getValues(0);
+            returnValue = Integer.parseInt(value.getStringValue());
+        }
+        return returnValue;
+    }
+
+    public static Object getStringField(String field, Map<String, ListValue> info) {
+        String returnValue = "";
+        if (info.containsKey(field)) {
+            Value value = info.get(field).getValues(0);
+            returnValue = value.getStringValue();
+        }
+        return returnValue;
     }
 
 
